@@ -1,0 +1,8 @@
+transformers==5.19.0
+sentencepiece==0.2.2
+torch>=2.6
+onnx>=1.16
+onnxruntime>=1.18
+onnxsim>=0.8.1
+openai>=1.66.0
+PyYAML>=6.0
