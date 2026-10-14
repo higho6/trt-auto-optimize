@@ -38,6 +38,8 @@ Runtime:
   --max-turns N           Agent turn budget (default 30).
   --max-candidates N      Candidate budget (default 3).
   --command-timeout N     Per-command timeout seconds (default 900).
+  --api-timeout N         SDK request timeout seconds (default 120; not total turn limit).
+  --api-retries N         SDK retries (default 2; use 0 for diagnosis).
   --rtol VALUE            Accuracy relative tolerance (default 1e-3).
   --atol VALUE            Accuracy absolute tolerance (default 1e-4).
   --min-speedup VALUE     Promotion threshold (default 1.03).
@@ -77,6 +79,8 @@ allow_execution=false
 max_turns=30
 max_candidates=3
 command_timeout=900
+api_timeout=120
+api_retries=2
 rtol=1e-3
 atol=1e-4
 min_speedup=1.03
@@ -89,7 +93,7 @@ while [[ $# -gt 0 ]]; do
         --prepare-only) prepare=true; shift; continue ;;
         --allow-api-data) allow_api=true; shift; continue ;;
         --allow-local-execution) allow_execution=true; shift; continue ;;
-        --api-key|--api-key-file|--base-url|--model|--batch-size|--model-path|--onnx|--shapes|--baseline|--output-dir|--artifacts-dir|--build-arg|--python|--trtexec|--ncu|--ncu-python|--max-turns|--max-candidates|--command-timeout|--rtol|--atol|--min-speedup)
+        --api-key|--api-key-file|--base-url|--model|--batch-size|--model-path|--onnx|--shapes|--baseline|--output-dir|--artifacts-dir|--build-arg|--python|--trtexec|--ncu|--ncu-python|--max-turns|--max-candidates|--command-timeout|--api-timeout|--api-retries|--rtol|--atol|--min-speedup)
             [[ $# -ge 2 && -n $2 ]] || fail "Missing value for $option"
             if [[ $option != --build-arg && $2 == --* ]]; then
                 fail "Missing value for $option"
@@ -125,12 +129,15 @@ while [[ $# -gt 0 ]]; do
         --max-turns) max_turns=$2 ;;
         --max-candidates) max_candidates=$2 ;;
         --command-timeout) command_timeout=$2 ;;
+        --api-timeout) api_timeout=$2 ;;
+        --api-retries) api_retries=$2 ;;
         --rtol) rtol=$2 ;;
         --atol) atol=$2 ;;
         --min-speedup) min_speedup=$2 ;;
     esac
     shift 2
 done
+[[ $api_retries =~ ^[0-9]+$ ]] || fail "API retries must be a non-negative integer"
 for value in "$batch" "$max_turns" "$max_candidates" "$command_timeout"; do
     [[ $value =~ ^[1-9][0-9]*$ ]] || fail "Batch size and runtime budgets must be positive integers"
 done
@@ -164,6 +171,7 @@ rtol, atol, speedup = map(float, sys.argv[2:])
 if not all(map(math.isfinite, (rtol, atol, speedup))) or min(rtol, atol) < 0 or speedup <= 1:
     raise ValueError("Invalid tolerances or speedup threshold")
 ' "$shapes" "$rtol" "$atol" "$min_speedup"
+"$python_bin" -c 'import math, sys; value = float(sys.argv[1]); assert math.isfinite(value) and value > 0, "API timeout must be finite and positive"' "$api_timeout"
 
 if [[ $prepare == false ]]; then
     [[ $allow_api == true && $allow_execution == true ]] || fail "Agent mode requires --allow-api-data and --allow-local-execution (not sandboxed)"
@@ -246,6 +254,7 @@ agent_args=(
     --run-dir "$output/agent" --model "$model" --trtexec "$trtexec_bin"
     --max-turns "$max_turns" --max-candidates "$max_candidates"
     --command-timeout "$command_timeout" --rtol "$rtol" --atol "$atol"
+    --api-timeout "$api_timeout" --api-retries "$api_retries"
     --min-speedup "$min_speedup"
 )
 for arg in "${build_args[@]}"; do agent_args+=("--build-arg=$arg"); done

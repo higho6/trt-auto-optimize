@@ -344,6 +344,19 @@ bash engine/run_profile.sh --prepare-only \
 支持 `--rtol`、`--atol`、`--min-speedup`、`--command-timeout` 和工具路径等参数；
 全部参数见 `bash engine/run_profile.sh --help`。
 
+如果停留在 `[4/4] Starting OpenAI optimization agent`，检查 `logs/agent.log`
+和 `agent/events.jsonl`。Agent 会打印实际模型名、每轮请求开始/结束、
+每 30 秒的等待提示以及正在执行的工具；API 错误记录类型和 HTTP 状态码。
+默认 API 请求超时为 120 秒，SDK 最多重试两次，因此总等待可能超过 120 秒；
+`--command-timeout` 只限制本地工具，不限制 API。
+诊断时可传 `--api-timeout 60 --api-retries 0`，避免自动重试掩盖错误。
+这些设置是 SDK 请求超时，不是整个 Agent 回合的硬截止时间。
+模型标识必须与后端提供的精确 ID 一致，例如 `--model gpt-6.1-sol`
+会原样传给后端；脚本不保证该模型在官方 OpenAI 或你的账户上可用。
+兼容后端必须支持 `/v1/responses` 和 function calling，不能仅提供
+`/v1/chat/completions`。不要把 API Key 写入 `requirements.txt`；
+如果已泄露，请先撤销并更换，再通过私有文件或环境变量配置。
+
 默认分类根目录为 `artifacts/`，用 `--artifacts-dir DIR` 可整体调整。
 运行记录默认在 `artifacts/runs/pipeline-<唯一标识>/`，也可用 `--output-dir`
 指定不存在的新目录。该目录的 `logs/` 保存导出/构建/校验/Agent 的日志，

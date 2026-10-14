@@ -74,7 +74,10 @@ print('test trtexec finished')
         )
 
     def test_prepare_pipeline_and_build_argument_propagation(self) -> None:
-        result = self.run_launcher(["--prepare-only", "--build-arg", "--duration=1"])
+        result = self.run_launcher([
+            "--prepare-only", "--build-arg", "--duration=1",
+            "--model", "gpt-6.1-sol", "--api-timeout", "60", "--api-retries", "0",
+        ])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.output / "baseline/engines/model.engine").is_file())
         self.assertTrue((self.root / "artifacts/engines" / self.output.name / "model.engine").is_file())
@@ -89,6 +92,9 @@ print('test trtexec finished')
         self.assertIn("--build-arg=--duration=1", agent)
         self.assertNotIn("--build-arg=--duration=5", agent)
         self.assertFalse(any(call["has_key"] for call in calls))
+        self.assertEqual(agent[agent.index("--model") + 1], "gpt-6.1-sol")
+        self.assertEqual(agent[agent.index("--api-timeout") + 1], "60")
+        self.assertEqual(agent[agent.index("--api-retries") + 1], "0")
 
     def test_api_key_file_and_backend_are_environment_only(self) -> None:
         key = "test-only-placeholder-not-a-real-key"
@@ -115,6 +121,7 @@ print('test trtexec finished')
         for extra in (
             [], ["--prepare-only", "--batch-size", "0"],
             ["--prepare-only", "--unknown"], ["--api-key-file", "a", "--api-key", "b"],
+            ["--prepare-only", "--api-retries", "-1"],
         ):
             result = self.run_launcher(extra)
             self.assertNotEqual(result.returncode, 0)

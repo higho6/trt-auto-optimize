@@ -9,6 +9,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -737,6 +739,8 @@ class Workflow:
 
 
 def agent_loop(client, workflow: Workflow) -> str:
+    from openai import OpenAIError
+
     instructions = workflow.skill_instructions()
     messages = [{
         "role": "user",
@@ -753,11 +757,37 @@ def agent_loop(client, workflow: Workflow) -> str:
         }),
     }]
     for turn in range(workflow.args.max_turns):
-        response = client.responses.create(
-            model=workflow.args.model, instructions=instructions,
-            input=messages, tools=TOOLS, store=False, max_output_tokens=6000,
-            parallel_tool_calls=False,
-        )
+        started = time.monotonic()
+        workflow.event("api_request_started", {"turn": turn, "model": workflow.args.model})
+        print(f"[Agent turn {turn + 1}] Requesting model={workflow.args.model}; waiting for Responses API...", flush=True)
+        finished = threading.Event()
+
+        def report_wait() -> None:
+            while not finished.wait(30):
+                print(f"[Agent turn {turn + 1}] Still waiting for API response ({time.monotonic() - started:.0f}s)...", flush=True)
+
+        reporter = threading.Thread(target=report_wait, daemon=True)
+        reporter.start()
+        try:
+            response = client.responses.create(
+                model=workflow.args.model, instructions=instructions,
+                input=messages, tools=TOOLS, store=False, max_output_tokens=6000,
+                parallel_tool_calls=False,
+            )
+        except OpenAIError as error:
+            workflow.event("api_request_failed", {
+                "turn": turn, "error": type(error).__name__,
+                "status_code": getattr(error, "status_code", None),
+            })
+            print(f"[Agent turn {turn + 1}] API failed: {type(error).__name__}; check backend/model/access or network.", flush=True)
+            raise
+        finally:
+            finished.set()
+            reporter.join()
+            elapsed = time.monotonic() - started
+            workflow.event("api_request_finished", {"turn": turn, "elapsed_seconds": elapsed})
+            print(f"[Agent turn {turn + 1}] API request ended after {elapsed:.1f}s.", flush=True)
+        print(f"[Agent turn {turn + 1}] Response status: {response.status}", flush=True)
         if response.status != "completed":
             raise RuntimeError(f"OpenAI response did not complete: {response.status}")
         messages.extend(item.model_dump(exclude_none=True) for item in response.output)
@@ -772,6 +802,7 @@ def agent_loop(client, workflow: Workflow) -> str:
             (workflow.run_dir / "final.txt").write_text(text + "\n")
             return text
         for call in calls:
+            print(f"[Agent turn {turn + 1}] Executing tool: {call.name}", flush=True)
             try:
                 result = workflow.dispatch(call.name, json.loads(call.arguments))
             except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
@@ -799,6 +830,8 @@ def main() -> None:
     parser.add_argument("--max-turns", type=int, default=30)
     parser.add_argument("--max-candidates", type=int, default=3)
     parser.add_argument("--command-timeout", type=int, default=900)
+    parser.add_argument("--api-timeout", type=float, default=120, help="SDK request timeout seconds; not a total turn deadline")
+    parser.add_argument("--api-retries", type=int, default=2, help="SDK retries after the first attempt; use 0 for diagnosis")
     parser.add_argument("--trtexec", default="trtexec")
     parser.add_argument("--ncu", default="ncu")
     parser.add_argument("--ncu-python", type=Path)
@@ -826,6 +859,8 @@ def main() -> None:
         parser.error("shapes must map input names to positive integer dimensions")
     if min(args.max_turns, args.max_candidates, args.command_timeout) <= 0:
         parser.error("turn/candidate/timeout budgets must be positive")
+    if not math.isfinite(args.api_timeout) or args.api_timeout <= 0 or args.api_retries < 0:
+        parser.error("api-timeout must be finite/positive and api-retries non-negative")
     if (
         not all(math.isfinite(x) for x in (args.rtol, args.atol, args.min_speedup))
         or args.rtol < 0 or args.atol < 0 or args.min_speedup <= 1
@@ -845,7 +880,12 @@ def main() -> None:
         return
     from openai import OpenAI
 
-    client = OpenAI(timeout=120, max_retries=2)
+    client = OpenAI(timeout=args.api_timeout, max_retries=args.api_retries)
+    print(
+        f"API settings: model={args.model}, request timeout={args.api_timeout:g}s, "
+        f"retries={args.api_retries}. Timeout/retry failures may take multiple attempts.",
+        flush=True,
+    )
     print(agent_loop(client, workflow))
     print(f"Workflow evidence saved to {workflow.run_dir}")
 

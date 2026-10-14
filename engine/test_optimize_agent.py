@@ -3,6 +3,8 @@ import json
 import sys
 import tempfile
 import unittest
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -172,6 +174,27 @@ class WorkflowTests(unittest.TestCase):
         self.args.max_turns = 0
         with self.assertRaisesRegex(RuntimeError, "budget exhausted"):
             agent_loop(client, self.workflow)
+
+    def test_api_model_progress_and_failure_events(self) -> None:
+        from openai import APIConnectionError
+        import httpx
+
+        self.args.model = "gpt-6.1-sol"
+        responses = Mock()
+        responses.create.side_effect = APIConnectionError(
+            request=httpx.Request("POST", "https://example.invalid/v1/responses")
+        )
+        output = io.StringIO()
+        with redirect_stdout(output), self.assertRaises(APIConnectionError):
+            agent_loop(SimpleNamespace(responses=responses), self.workflow)
+        self.assertEqual(responses.create.call_args.kwargs["model"], "gpt-6.1-sol")
+        self.assertIn("waiting for Responses API", output.getvalue())
+        self.assertIn("API failed: APIConnectionError", output.getvalue())
+        events = [json.loads(line) for line in (self.workflow.run_dir / "events.jsonl").read_text().splitlines()]
+        self.assertEqual(
+            [row["kind"] for row in events if row["kind"].startswith("api_request_")],
+            ["api_request_started", "api_request_failed", "api_request_finished"],
+        )
 
     def test_promotion_comes_from_independent_evaluator(self) -> None:
         import hashlib
